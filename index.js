@@ -10,7 +10,7 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
     ],
 });
-
+// balls
 const QUIZ_TYPES = {
     'whichCountryForGivenLanguage': 'Which one of these countries speaks {{answer}}?',
     'whichCountryForGivenFlag': 'Which country does this flag belong to?',
