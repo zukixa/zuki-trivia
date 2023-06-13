@@ -1,37 +1,23 @@
 import discord
 import asyncio
+import typing
 import json
+import httpx
 import aiassist
 from discord.ext import commands
 from collections import deque
 from discord.ext import commands, tasks
 from discord import app_commands
 import time
+from asyncio import sleep
 
 
 class MyClient(discord.Client):
     def __init__(self, *, intents: discord.Intents):
         super().__init__(intents=intents)
-        # A CommandTree is a special type that holds all the application command
-        # state required to make it work. This is a separate class because it
-        # allows all the extra state to be opt-in.
-        # Whenever you want to work with application commands, your tree is used
-        # to store and work with them.
-        # Note: When using commands.Bot instead of discord.Client, the bot will
-        # maintain its own tree instead.
         self.tree = app_commands.CommandTree(self)
 
-    # In this basic example, we just synchronize the app commands to one guild.
-    # Instead of specifying a guild to every command, we copy over our global commands instead.
-    # By doing so, we don't have to wait up to an hour until they are shown to the end-user.
     async def setup_hook(self):
-        #    # This copies the global commands over to your guild.
-        #    for guild in self.guilds:
-        #        print(guild.id)
-        #        print(guild.name)
-        # MY_GUILD = discord.Object(id=1090022628946886726)
-        # self.tree.copy_global_to(guild=MY_GUILD)
-        # await self.tree.sync(guild=MY_GUILD)
         await self.tree.sync()
 
 
@@ -52,6 +38,15 @@ def close_enough(response, answers):
             return True
 
     return False
+
+
+async def get_aiassist_value(prompt):
+    while True:
+        try:
+            response = await aiassist.get_value(prompt)
+            return response
+        except httpx.ReadTimeout:
+            await sleep(5)  # Wait for 5 seconds before trying again
 
 
 @client.event
@@ -88,7 +83,7 @@ async def quiz(interaction, topic, difficulty):
             prompt += "\n\nAlready asked questions:\n" + "\n".join(asked_questions)
 
         # AI-generated question fetching
-        response = await aiassist.get_value(prompt)
+        response = await get_aiassist_value(prompt)
         response = response.replace("\\n", "").replace('\\"', '"')
         response_dict = json.loads(response)
         question = response_dict["question"]
@@ -105,21 +100,30 @@ async def quiz(interaction, topic, difficulty):
         while attempt < attempts:
             attempt += 1
 
-            user_response = await client.wait_for(
-                "message",
-                check=lambda m: (m.channel == interaction.channel and not m.author.bot),
-                timeout=10,
-            )
-
-            if close_enough(user_response.content, answers):
-                user_scores[user_response.author] = (
-                    user_scores.get(user_response.author, 0) + 1
+            try:
+                user_response = await client.wait_for(
+                    "message",
+                    check=lambda m: (
+                        m.channel == interaction.channel and not m.author.bot
+                    ),
+                    timeout=30,
                 )
-                asked += 1
-                await interaction.channel.send("Correct!")
-                break  # Break out of the inner loop, so a new question will be fetched
-            else:
-                await interaction.channel.send("Incorrect!")
+
+                if close_enough(user_response.content, answers):
+                    user_scores[user_response.author] = (
+                        user_scores.get(user_response.author, 0) + 1
+                    )
+                    asked += 1
+                    await interaction.channel.send("Correct!")
+                    break  # Break out of the inner loop, so a new question will be fetched
+                else:
+                    await interaction.channel.send("Incorrect!")
+
+            except asyncio.TimeoutError:  # Handling TimeoutError
+                await interaction.channel.send(
+                    "Time's up!\nThe expected answers were: " + ",".join(answers)
+                )
+                break
 
         if attempt == attempts:
             await interaction.channel.send(
@@ -128,8 +132,9 @@ async def quiz(interaction, topic, difficulty):
             break
 
     time_tracker.cancel()
+    user_scores_with_ids = {str(user.id): score for user, score in user_scores.items()}
 
-    return user_scores, time_spent["seconds"]
+    return user_scores_with_ids, time_spent["seconds"]
 
 
 @client.tree.command(
@@ -162,27 +167,44 @@ async def _quiz(interaction: discord.Interaction, topic: str, difficulty: str):
 
 
 @client.tree.command(name="stats", description="Show your quiz stats.")
-async def _stats(interaction: discord.Interaction):
+async def _stats(
+    interaction: discord.Interaction, user: typing.Optional[discord.Member] = None
+):
     await interaction.response.defer()
-    user_id = str(interaction.user.id)
-    embed = discord.Embed(title="Quiz Stats", color=0x1ABC9C)
-
+    if user:
+        user_id = str(user.id)
+        name = user.display_name
+    else:
+        user_id = str(interaction.user.id)
+        name = interaction.user.display_name
+    guild_id = str(interaction.guild.id)
+    embed = discord.Embed(title=f"Quiz Stats for {name}", color=0x1ABC9C)
     with open("trivia_stats.json", "r") as f:
         stats = json.load(f)
-
-    if user_id not in stats:
+    print(stats)
+    if guild_id not in stats:
         embed.description = "You haven't played a quiz yet!"
     else:
-        total_points = sum([quiz_run["points"] for quiz_run in stats[user_id]])
-        total_time = sum([quiz_run["time_spent"] for quiz_run in stats[user_id]])
-        num_quizzes = len(stats[user_id])
-        embed.description = (
-            f"Quizzes Played: {num_quizzes}\n"
-            f"Total Points: {total_points}\n"
-            f"Total Time Spent: {total_time}s"
-        )
+        guild_stats = stats[guild_id]
+        total_points = 0
+        total_time = 0
+        num_quizzes = 0
 
-    # Send the embed
+        for quiz_run in guild_stats:
+            if user_id in quiz_run["scores"]:
+                total_points += quiz_run["scores"][user_id]
+                total_time += quiz_run["time_spent"]
+                num_quizzes += 1
+
+        if num_quizzes == 0:
+            embed.description = "You haven't played a quiz yet!"
+        else:
+            embed.description = (
+                f"Quizzes Played: {num_quizzes}\n"
+                f"Total Points: {total_points}\n"
+                f"Total Time Spent: {total_time}s"
+            )
+
     await interaction.followup.send(embed=embed)
 
 
