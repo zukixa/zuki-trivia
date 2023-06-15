@@ -1,3 +1,4 @@
+import Levenshtein
 import discord
 import asyncio
 import typing
@@ -30,11 +31,23 @@ with open("config.json", "r") as f:
 
 
 def close_enough(response, answers):
+    threshold = 2
     # Implement this function to evaluate if the user's response is close enough to the correct answer
     # You can use string similarity measures like Levenshtein distances or any other relevant algorithms
     # Check if response matches any of the answers
+    response = response.lower()
     for answer in answers:
-        if response.lower() == answer.lower():
+        answer = answer.lower()
+
+        # Check if the response is an exact match
+        if response == answer:
+            return True
+
+        # Calculate the Levenshtein distance
+        distance = Levenshtein.distance(response, answer)
+
+        # Check if the distance is within the threshold
+        if distance <= threshold:
             return True
 
     return False
