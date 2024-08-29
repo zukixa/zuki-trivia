@@ -1,6 +1,7 @@
 import Levenshtein, discord, asyncio, typing, json, aiohttp, aiofiles
 from discord import app_commands
-
+from openai import AsyncOpenAI
+from curl_cffi.requests import AsyncSession
 
 class MyClient(discord.Client):
     def __init__(self, *, intents: discord.Intents):
@@ -17,6 +18,17 @@ if __name__ == "__main__":
 
 with open("config.json", "r") as f:
     config = json.load(f)
+    apikey = config['zj-api-key']
+
+oai = AsyncOpenAI(base_url="https://zukijourney.xyzbot.net/v1",api_key=apikey)
+
+def remove_newlines(s):
+    return s.replace('\n', ' [newline] ').replace('\r', '').replace("<", "[").replace(">", "]").replace("(","[").replace(")","]").replace("{", "[").replace("}", "]").replace('"', " [apostrophe] ").replace("'", " [apostrophe] ")
+
+def generate_random_string(length=11):
+    characters = string.ascii_lowercase + string.digits
+    session_hash = ''.join(random.choice(characters) for _ in range(length))
+    return session_hash
 
 
 async def close_enough(response, answers):
@@ -42,40 +54,15 @@ async def close_enough(response, answers):
 
 async def handle_ai_request(prompt):
     try:
-        headers = {
-        "Accept": "text/event-stream",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Authorization": f"Bearer {config['zj-api-key']}",
-        "Content-Type": "application/json",
-        "Origin": "https://free.netfly.top",
-        "Referer": "https://free.netfly.top/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest",
-        }
-
-        data = {
-            "messages": [
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "model": "gpt-3.5-turbo",
-            "temperature": 0.5,
-            "presence_penalty": 0,
-            "frequency_penalty": 0,
-            "top_p": 1,
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://zukijourney.xyzbot.net/v1/chat/completions",#"https://free.netfly.top/api/openai/v1/chat/completions",
-                                    headers=headers,
-                                    data=json.dumps(data)) as resp:
-                res = (await resp.json())["choices"][0]["message"]["content"]
-        ans = res.replace("\n","")
-        return ans
+        prompt = remove_newlines(prompt)
+        response = oai.chat.completions.create(
+            messages=[{'role':'user','content':prompt}],
+            model="llama-3.1-sonar-large-128k-online",
+            stream=False,
+        )
+        return response.choices[0].message.content
     except:
         return None
-
 
 @client.event
 async def on_ready():
@@ -101,10 +88,10 @@ async def quiz(interaction, topic, difficulty):
     while asked < num_questions:
         # Move the question-fetching code into the inner loop
         prompt = (
-            'Hi ChatGPT.\n You are now a Trivia Generator that can only respond in json format.\n You will be given a topic, and you must respond with a trivia question, and list all possible answers in a json format.\n ((YOU CAN **ONLY** TALK IN ***JSON***)).\n For example, for the topic "Capitals", you would respond {"question": "What is the capital of France?", "answers": "Paris, PARIS, paris"} with all the answers being all possible valid answers to the question.\n ONLY RESPOND WITH ONE JSON RESPONSE.\n THAT IS ALL YOU ARE SUPPOSED TO RESPOND WITH.\n YOU WILL DIE IF YOU SAY ANYTHING ELSE EXCEPT THE JSON RESPONSE.\n BEGIN YOUR RESPONSE WITH "{".\n\n Your first topic is: ((('
+            'Hi.\n You are now a Trivia Generator that can only respond in json format.\n You will be given a topic, and you must respond with a trivia question, and list all possible answers in a json format.\n ((YOU CAN **ONLY** TALK IN ***JSON***)).\n For example, for the topic "Capitals", you would respond {"question": "What is the capital of France?", "answers": "Paris, PARIS, paris"} with all the answers being all possible valid answers to the question.\n ONLY RESPOND WITH ONE JSON RESPONSE.\n THAT IS ALL YOU ARE SUPPOSED TO RESPOND WITH.\n YOU WILL DIE IF YOU SAY ANYTHING ELSE EXCEPT THE JSON RESPONSE.\n BEGIN YOUR RESPONSE WITH "{".\n\n Your first topic is: ((('
             + topic
             + "))).\n With the difficulty of the question being: ((("
-            + difficulty + ")))"
+            + difficulty + ")))" 
         )
 
         if asked_questions:
@@ -115,7 +102,7 @@ async def quiz(interaction, topic, difficulty):
         # AI-generated question fetching
         response = await handle_ai_request(prompt)
         if not response:
-            await interaction.followup.send('Free AI provider stopped responding. Quiz cancelled.')
+            await interaction.followup.send('Free AI provider failed to respond. Quiz cancelled.')
             return
         response_dict = json.loads(response)
         question = response_dict["question"]
@@ -197,6 +184,55 @@ async def _quiz(interaction: discord.Interaction, topic: str, difficulty: str):
         result_message += f"<@{user}>: {score} points\n"
     await interaction.channel.send(result_message)
 
+@client.tree.command(name="help", description="Show detailed help for the Trivia bot")
+async def show_help(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    help_embed = discord.Embed(
+        title="Trivia Bot Help",
+        description="Welcome to the Trivia Bot! Here's how to use the bot:",
+        color=discord.Color.blue()
+    )
+
+    help_embed.add_field(
+        name="Starting a Quiz",
+        value="Use the `/quiz` command to start a new quiz:\n"
+              "```/quiz topic: &lt;topic&gt; difficulty: &lt;difficulty&gt;```\n"
+              "Replace `<topic>` with any subject you want to be quizzed on.\n"
+              "Replace `<difficulty>` with easy, medium, or hard.",
+        inline=False
+    )
+
+    help_embed.add_field(
+        name="Quiz Rules",
+        value="• Each quiz consists of 10 questions\n"
+              "• You have 3 attempts per question\n"
+              "• You have 30 seconds to answer each question\n"
+              "• The bot uses AI to generate unique questions\n"
+              "• Answers are checked for close matches",
+        inline=False
+    )
+
+    help_embed.add_field(
+        name="Viewing Stats",
+        value="Use the `/stats` command to view your quiz statistics:\n"
+              "```/stats [user: @mention]```\n"
+              "You can optionally mention a user to see their stats.",
+        inline=False
+    )
+
+    help_embed.add_field(
+        name="Stats Information",
+        value="The stats show:\n"
+              "• Number of quizzes played\n"
+              "• Total points earned\n"
+              "• Total time spent on quizzes",
+        inline=False
+    )
+
+    help_embed.set_footer(text="zuki.trivia- Test your knowledge and have fun!")
+
+    await interaction.followup.send(embed=help_embed)
 
 @client.tree.command(name="stats", description="Show your quiz stats.")
 async def _stats(
@@ -240,4 +276,4 @@ async def _stats(
     await interaction.followup.send(embed=embed)
 
 
-client.run(config["token"])
+client.run(config["triviatoken"])               
